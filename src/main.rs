@@ -6,7 +6,7 @@ use nom::{
     IResult,
     bits::complete as bits,
     bytes::complete as bytes, 
-    error::Error
+    error::Error, AsBytes
 };
 
 fn parse_be_u16(bytes: &[u8]) -> IResult<&[u8], u16>
@@ -15,7 +15,7 @@ fn parse_be_u16(bytes: &[u8]) -> IResult<&[u8], u16>
     Ok((rest, u16::from_be_bytes(bytes.try_into().expect("Taken 2 bytes, so should be fine to convert to [u8; 2]"))))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum Opcode
 {
     Query = 0,
@@ -25,13 +25,13 @@ enum Opcode
     Update = 5,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ResponseCode
 {
     NoError = 0,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct Header
 {
     /// A random ID assigned to query packets. Response packets must reply with the same ID.
@@ -112,7 +112,7 @@ impl Header
 
         if self.is_reply { flags |= 0x8000; }
 
-        flags |= ((self.opcode as u16) & 0x0F) << 14;
+        flags |= ((self.opcode as u16) & 0x0F) << 11;
 
         if self.is_authoritative {  flags |= 0x0400; }
         if self.truncation {  flags |= 0x0200; }
@@ -120,12 +120,12 @@ impl Header
         if self.recursion_available {  flags |= 0x0080; }
         flags |= (self.response_code as u16) & 0x0F;
 
-        buffer.put_u16_ne(self.packet_id);
-        buffer.put_u16_ne(flags);
-        buffer.put_u16_ne(self.question_count);
-        buffer.put_u16_ne(self.answer_record_count);
-        buffer.put_u16_ne(self.authority_record_count);
-        buffer.put_u16_ne(self.additional_record_count);
+        buffer.put_u16(self.packet_id);
+        buffer.put_u16(flags);
+        buffer.put_u16(self.question_count);
+        buffer.put_u16(self.answer_record_count);
+        buffer.put_u16(self.authority_record_count);
+        buffer.put_u16(self.additional_record_count);
     }
 
     fn parse_opcode(bits: (&[u8], usize)) -> IResult<(&[u8], usize), Opcode>
@@ -155,6 +155,31 @@ impl Header
     }
 }
 
+#[test]
+fn test_serialize_deserialize_header_gets_same_result()
+{
+    let header = Header {
+        packet_id: 1234,
+        is_reply: false,
+        opcode: Opcode::Notify,
+        truncation: false,
+        recursion_desired: true,
+        recursion_available: false,
+        is_authoritative: false,
+        response_code: ResponseCode::NoError,
+        question_count: 1,
+        answer_record_count: 2,
+        authority_record_count: 3,
+        additional_record_count: 4,
+    };
+    let mut bytes = BytesMut::new();
+    header.write_to(&mut bytes);
+    
+    eprintln!("{:?}", bytes.as_bytes());
+    
+    assert_eq!(header, Header::parse(bytes.as_bytes()).unwrap().1);
+}
+
 fn main() -> anyhow::Result<()> {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     eprintln!("Logs from your program will appear here!");
@@ -174,7 +199,9 @@ fn main() -> anyhow::Result<()> {
                         eprintln!("Header: {:?}, rest: {}", header, rest.len());
 
                         let mut response = BytesMut::with_capacity(12);
-                        Header::reply(&header, ResponseCode::NoError).write_to(&mut response);
+                        let reply_header = Header::reply(&header, ResponseCode::NoError);
+                        eprintln!("Reply header: {:?}", reply_header);
+                        reply_header.write_to(&mut response);
 
                         udp_socket
                             .send_to(&response, source)

@@ -1,77 +1,105 @@
 use ::bytes::BytesMut;
+use anyhow::anyhow;
 use dns_starter_rust::answer::Answer;
-use dns_starter_rust::header::{Header, Opcode, ResponseCode};
+use dns_starter_rust::dns::Request;
+use dns_starter_rust::header::{Opcode, ResponseCode};
 use dns_starter_rust::query::Query;
+use nom::error::{Error, ErrorKind, FromExternalError};
 use nom::IResult;
-use std::net::UdpSocket;
+use rand::random;
+use std::env;
+use std::net::{Ipv4Addr, UdpSocket};
 
-fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IResult<&'a [u8], ()> {
+trait Resolver {
+    fn resolve(&self, query: &Query) -> anyhow::Result<Vec<Answer>>;
+}
+
+struct DemoResolver;
+
+impl Resolver for DemoResolver {
+    fn resolve(&self, query: &Query) -> anyhow::Result<Vec<Answer>> {
+        Ok(vec![Answer::with_ipv4(
+            query.labels.clone(),
+            query.record_type,
+            query.record_class,
+            11,
+            0x01020304,
+        )])
+    }
+}
+
+struct ForwardingResolver {
+    socket: UdpSocket,
+}
+
+impl Resolver for ForwardingResolver {
+    fn resolve(&self, query: &Query) -> anyhow::Result<Vec<Answer>> {
+        eprintln!("Resolving {} externally", query.labels.to_string());
+        let mut request = Request::new(random(), Opcode::Query);
+        request.add_query(query.clone());
+        let mut buffer = BytesMut::new();
+        request.write_to(&mut buffer)?;
+        self.socket.send(&buffer)?;
+
+        buffer.resize(512, 0);
+        let received_bytes = self.socket.recv(&mut buffer)?;
+        anyhow::ensure!(received_bytes <= buffer.len());
+        buffer.resize(received_bytes, 0);
+        let (_, response) = Request::parse(&buffer).map_err(|e| e.to_owned())?;
+        anyhow::ensure!(response.header().packet_id == request.header().packet_id);
+        anyhow::ensure!(response.header().response_code == ResponseCode::NoError);
+        Ok(response.answers_iter().map(|a| a.clone()).collect())
+    }
+}
+
+impl ForwardingResolver {
+    fn new(address: &str) -> anyhow::Result<ForwardingResolver> {
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
+        socket.connect(address)?;
+        Ok(ForwardingResolver { socket })
+    }
+}
+
+fn handle_message<'a>(
+    payload: &'a [u8],
+    response_buffer: &mut BytesMut,
+    resolver: &dyn Resolver,
+) -> IResult<&'a [u8], ()> {
     let base_offset = payload.as_ptr() as usize;
     eprintln!(
         "Received bytes: {:X?}, base_offset: {:?}",
         payload, base_offset
     );
-    let (payload, header) = Header::parse(payload)?;
-    eprintln!("Received header: {:?}", header);
+    let (payload, request) = Request::parse(payload)?;
+    eprintln!("Received request: {:?}", request);
     eprintln!("Remaining bytes: {:X?}", payload);
+
     response_buffer.clear();
 
-    match header.opcode {
+    match request.header().opcode {
         Opcode::Query => {
-            let mut queries = Vec::<Query>::new();
+            let mut reply = Request::reply(&request, ResponseCode::NoError);
 
-            let mut payload = payload;
-            for _ in 0..header.question_count {
-                let (rest, query) = Query::parse(payload)?;
-                payload = rest;
-                eprintln!("Received query: {:?}", query);
-                eprintln!("Remaining bytes: {:X?}", payload);
-                queries.push(query);
-            }
-
-            let mut reply_header = Header::reply(&header, ResponseCode::NoError);
-            reply_header.question_count = queries.len() as u16;
-            reply_header.answer_record_count = queries.len() as u16;
-            eprintln!("Reply header: {:?}", reply_header);
-            reply_header.write_to(response_buffer);
-
-            let mut answers = Vec::with_capacity(queries.len());
-            for i in 1..queries.len() {
-                let (left, right) = queries.split_at_mut(i);
-                for a in left.iter_mut() {
-                    for b in right.iter_mut() {
-                        a.labels.decompress(&b.labels, base_offset);
-                        b.labels.decompress(&a.labels, base_offset);
-                    }
+            for query in request.queries_iter() {
+                eprintln!("Reply query: {:?}", query);
+                let answers = resolver.resolve(&query).map_err(|e| {
+                    nom::Err::Failure(Error::from_external_error(payload, ErrorKind::Fail, e))
+                })?;
+                for answer in answers {
+                    reply.add_answer(answer);
                 }
             }
-            for query in queries.iter() {
-                eprintln!("Decompressed query: {:?}", query);
-            }
 
-            for query in queries {
-                eprintln!("Reply query: {:?}", query);
-                query
-                    .write_to(response_buffer)
-                    .expect("Writing query should have succeeded");
-                answers.push(Answer::with_ipv4(
-                    query.labels,
-                    query.record_type,
-                    query.record_class,
-                    1,
-                    0x01020304,
-                ));
-            }
-
-            for answer in answers {
-                answer
-                    .write_to(response_buffer)
-                    .expect("Writing answer should have succeeded");
-            }
+            eprintln!("Reply: {:?}", reply);
+            reply.write_to(response_buffer).map_err(|e| {
+                nom::Err::Failure(Error::from_external_error(payload, ErrorKind::Fail, e))
+            })?;
         }
         _ => {
-            let reply_header = Header::reply(&header, ResponseCode::NotImplemented);
-            reply_header.write_to(response_buffer);
+            let reply = Request::reply(&request, ResponseCode::NotImplemented);
+            reply.write_to(response_buffer).map_err(|e| {
+                nom::Err::Failure(Error::from_external_error(payload, ErrorKind::Fail, e))
+            })?;
         }
     }
 
@@ -80,18 +108,34 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
 }
 
 fn main() -> anyhow::Result<()> {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
+    eprintln!("Enbyted's implementation of a simple DNS server!");
+
+    let args: Vec<_> = env::args().collect();
 
     let udp_socket = UdpSocket::bind("127.0.0.1:2053").expect("Failed to bind to address");
     let mut buf: [u8; 512] = [0; 512];
     let mut response_buffer = BytesMut::new();
 
+    let resolver: Box<dyn Resolver> = match args.as_slice() {
+        [_] => Ok(Box::new(DemoResolver) as Box<dyn Resolver>),
+        [_, resolver, address] => {
+            if resolver != "--resolver" {
+                eprintln!("Usage ./your_server.sh [--resolver <ip>:<port>]");
+                anyhow::bail!("Invalid arguments");
+            }
+            Ok(Box::new(ForwardingResolver::new(address.as_str())?) as Box<dyn Resolver>)
+        }
+        _ => {
+            eprintln!("Usage ./your_server.sh [--resolver <ip>:<port>]");
+            Err(anyhow!("Invalid arguments"))
+        }
+    }?;
+
     loop {
         match udp_socket.recv_from(&mut buf) {
             Ok((size, source)) => {
                 eprintln!("Received {} bytes from {}", size, source);
-                match handle_message(&buf[0..size], &mut response_buffer) {
+                match handle_message(&buf[0..size], &mut response_buffer, resolver.as_ref()) {
                     Ok(_) => {
                         eprintln!("Sending {} bytes reply", response_buffer.len());
                         udp_socket

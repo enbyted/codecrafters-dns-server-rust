@@ -88,6 +88,15 @@ impl Label {
     }
 }
 
+impl ToString for Label {
+    fn to_string(&self) -> String {
+        match self {
+            Label::Pointer { .. } => "<Pointer>".to_string(),
+            Label::Value { label, .. } => label.clone(),
+        }
+    }
+}
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Labels {
@@ -98,6 +107,14 @@ impl Index<usize> for Labels {
     type Output = Label;
     fn index<'a>(&'a self, i: usize) -> &'a Label {
         return &self.labels[i];
+    }
+}
+
+impl ToString for Labels {
+    fn to_string(&self) -> String {
+        self.labels
+            .iter()
+            .fold(String::new(), |res, l| format!("{}{}.", res, l.to_string()))
     }
 }
 

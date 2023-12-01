@@ -106,7 +106,9 @@ fn test_serialize_deserialize_answer_gets_the_same_result() {
         0xAABBCCDD,
     );
     let mut buf = BytesMut::new();
-    answer.write_to(&mut buf);
+    answer
+        .write_to(&mut buf)
+        .expect("Answer write should succeed");
     let (leftover, parsed_answer) = Answer::parse(&buf).expect("Decoding should go fine");
     assert!(leftover.is_empty());
     assert_eq!(answer, parsed_answer);

@@ -137,7 +137,7 @@ fn test_real_query_from_stage_7() {
     let (rest, query1) = Query::parse(&bytes[12..]).expect("parsing should work");
     eprintln!("Query1: {:?}", query1);
     eprintln!("Rest: {:X?}", rest);
-    let (rest, mut query2) = Query::parse(&rest).expect("parsing should work");
+    let (_, mut query2) = Query::parse(&rest).expect("parsing should work");
     eprintln!("Query2: {:?}", query2);
 
     assert!(query1.labels.is_decompressed());

@@ -7,14 +7,25 @@ use nom::{
     error::{Error, ErrorKind, FromExternalError},
     AsBytes, IResult,
 };
-use std::net::UdpSocket;
-use std::str;
+use std::{net::UdpSocket, str::FromStr};
+use std::{ops::Index, str};
 
 fn parse_be_u16(bytes: &[u8]) -> IResult<&[u8], u16> {
     let (rest, bytes) = bytes::take(2usize)(bytes)?;
     Ok((
         rest,
         u16::from_be_bytes(
+            bytes
+                .try_into()
+                .expect("Taken 2 bytes, so should be fine to convert to [u8; 2]"),
+        ),
+    ))
+}
+fn parse_be_u32(bytes: &[u8]) -> IResult<&[u8], u32> {
+    let (rest, bytes) = bytes::take(4usize)(bytes)?;
+    Ok((
+        rest,
+        u32::from_be_bytes(
             bytes
                 .try_into()
                 .expect("Taken 2 bytes, so should be fine to convert to [u8; 2]"),
@@ -217,64 +228,98 @@ enum RecordType {
     CNAME = 5,
 }
 
+impl RecordType {
+    pub fn parse<'a>(bytes: &'a [u8]) -> IResult<&'a [u8], RecordType> {
+        let (bytes, record_type_byte) = parse_be_u16(bytes)?;
+        let record_type = match record_type_byte {
+            1 => Ok(RecordType::A),
+            5 => Ok(RecordType::CNAME),
+            _ => Err(nom::Err::Error(Error::new(bytes, ErrorKind::Fail))),
+        }?;
+        Ok((bytes, record_type))
+    }
+
+    pub fn write_to(self: &Self, buffer: &mut BytesMut) {
+        buffer.put_u16(*self as u16);
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum RecordClass {
     IN = 1,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-struct Query<'a> {
-    labels: Vec<&'a str>,
-    record_type: RecordType,
-    record_class: RecordClass,
-}
-
-impl Query<'_> {
-    pub fn new<'a>(url: &'a str, record_type: RecordType, record_class: RecordClass) -> Query<'a> {
-        Query {
-            labels: url.split('.').collect(),
-            record_type,
-            record_class,
-        }
+impl RecordClass {
+    pub fn parse<'a>(bytes: &'a [u8]) -> IResult<&'a [u8], RecordClass> {
+        let (bytes, record_type_byte) = parse_be_u16(bytes)?;
+        let record_class = match record_type_byte {
+            1 => Ok(RecordClass::IN),
+            _ => Err(nom::Err::Error(Error::new(bytes, ErrorKind::Fail))),
+        }?;
+        Ok((bytes, record_class))
     }
 
-    pub fn parse<'a>(bytes: &'a [u8]) -> IResult<&'a [u8], Query<'a>> {
+    pub fn write_to(self: &Self, buffer: &mut BytesMut) {
+        buffer.put_u16(*self as u16);
+    }
+}
+
+#[repr(transparent)]
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct Labels {
+    labels: Vec<String>,
+}
+
+impl Index<usize> for Labels {
+    type Output = String;
+    fn index<'a>(&'a self, i: usize) -> &'a String {
+        return &self.labels[i];
+    }
+}
+
+impl Labels {
+    pub fn from_str(text: &str) -> anyhow::Result<Labels> {
+        let mut labels = Vec::new();
+        for label in text.split('.') {
+            anyhow::ensure!(label.len() <= u8::MAX as usize);
+            anyhow::ensure!(label.len() > 0);
+
+            labels.push(String::from_str(label)?);
+        }
+        Ok(Labels { labels })
+    }
+
+    pub fn parse<'a>(bytes: &'a [u8]) -> IResult<&'a [u8], Labels> {
         let mut bytes = bytes;
-        let mut labels = Vec::<&'a str>::new();
+        let mut labels = Vec::<String>::new();
         loop {
             let (rest, label) = Self::parse_label(bytes)?;
             bytes = rest;
             if label.len() == 0 {
                 break;
             }
+            let label = String::from_str(label).expect(
+                "This should always succeeed as label was already checkd to be a valid string",
+            );
             labels.push(label);
         }
-        let (bytes, record_type) = Self::parse_record_type(bytes)?;
-        let (bytes, record_class) = Self::parse_record_class(bytes)?;
 
-        Ok((
-            bytes,
-            Query {
-                labels,
-                record_type,
-                record_class,
-            },
-        ))
+        Ok((bytes, Labels { labels }))
     }
 
-    pub fn write_to(self: &Self, buffer: &mut BytesMut) -> anyhow::Result<()> {
-        for &label in self.labels.iter() {
-            let len = u8::try_from(label.len())?;
+    pub fn write_to(&self, buffer: &mut BytesMut) {
+        for label in self.labels.iter() {
+            let len = u8::try_from(label.len()).expect("The struct implementation should have made sure that we have labels of valid length");
             buffer.put_u8(len);
             buffer.put_slice(label.as_bytes());
         }
 
         // The last 0-length label
         buffer.put_u8(0);
-        buffer.put_u16(self.record_type as u16);
-        buffer.put_u16(self.record_class as u16);
+    }
 
-        Ok(())
+    pub fn len(&self) -> usize {
+        self.labels.len()
     }
 
     fn parse_label(bytes: &[u8]) -> IResult<&[u8], &str> {
@@ -292,30 +337,54 @@ impl Query<'_> {
 
         Ok((bytes, label))
     }
+}
 
-    fn parse_record_type(bytes: &[u8]) -> IResult<&[u8], RecordType> {
-        let (bytes, record_type_byte) = parse_be_u16(bytes)?;
-        let record_type = match record_type_byte {
-            1 => Ok(RecordType::A),
-            5 => Ok(RecordType::CNAME),
-            _ => Err(nom::Err::Error(Error::new(bytes, ErrorKind::Fail))),
-        }?;
-        Ok((bytes, record_type))
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct Query {
+    labels: Labels,
+    record_type: RecordType,
+    record_class: RecordClass,
+}
+
+impl Query {
+    pub fn new<'a>(
+        url: &str,
+        record_type: RecordType,
+        record_class: RecordClass,
+    ) -> anyhow::Result<Query> {
+        Ok(Query {
+            labels: Labels::from_str(url)?,
+            record_type,
+            record_class,
+        })
     }
 
-    fn parse_record_class(bytes: &[u8]) -> IResult<&[u8], RecordClass> {
-        let (bytes, record_type_byte) = parse_be_u16(bytes)?;
-        let record_type = match record_type_byte {
-            1 => Ok(RecordClass::IN),
-            _ => Err(nom::Err::Error(Error::new(bytes, ErrorKind::Fail))),
-        }?;
-        Ok((bytes, record_type))
+    pub fn parse(bytes: &[u8]) -> IResult<&[u8], Query> {
+        let (bytes, labels) = Labels::parse(bytes)?;
+        let (bytes, record_type) = RecordType::parse(bytes)?;
+        let (bytes, record_class) = RecordClass::parse(bytes)?;
+
+        Ok((
+            bytes,
+            Query {
+                labels,
+                record_type,
+                record_class,
+            },
+        ))
+    }
+
+    pub fn write_to(self: &Self, buffer: &mut BytesMut) {
+        self.labels.write_to(buffer);
+        self.record_type.write_to(buffer);
+        self.record_class.write_to(buffer);
     }
 }
 
 #[test]
 fn test_query_creation() {
-    let query = Query::new("www.google.com", RecordType::A, RecordClass::IN);
+    let query = Query::new("www.google.com", RecordType::A, RecordClass::IN)
+        .expect("Creating should succeed");
     assert_eq!(query.labels.len(), 3);
     assert_eq!(query.labels[0], "www");
     assert_eq!(query.labels[1], "google");
@@ -326,14 +395,109 @@ fn test_query_creation() {
 
 #[test]
 fn test_serialize_deserialize_query_gets_the_same_result() {
-    let query = Query::new("www.google.com", RecordType::A, RecordClass::IN);
+    let query = Query::new("www.google.com", RecordType::A, RecordClass::IN)
+        .expect("Creating should succeed");
     let mut buf = BytesMut::new();
-    query
-        .write_to(&mut buf)
-        .expect("Should be OK with provided input");
+    query.write_to(&mut buf);
     let (leftover, parsed_query) = Query::parse(&buf).expect("Decoding should go fine");
     assert!(leftover.is_empty());
     assert_eq!(query, parsed_query);
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct Answer {
+    labels: Labels,
+    record_type: RecordType,
+    record_class: RecordClass,
+    ttl: u32,
+    data: Vec<u8>,
+}
+
+impl Answer {
+    pub fn with_ipv4<'a>(
+        labels: Labels,
+        record_type: RecordType,
+        record_class: RecordClass,
+        ttl: u32,
+        ip: u32,
+    ) -> Answer {
+        let mut data = Vec::with_capacity(4);
+        data.put_u32(ip);
+        Answer {
+            labels,
+            record_type,
+            record_class,
+            ttl,
+            data,
+        }
+    }
+
+    pub fn parse(bytes: &[u8]) -> IResult<&[u8], Answer> {
+        let (bytes, labels) = Labels::parse(bytes)?;
+        let (bytes, record_type) = RecordType::parse(bytes)?;
+        let (bytes, record_class) = RecordClass::parse(bytes)?;
+        let (bytes, ttl) = parse_be_u32(bytes)?;
+        let (bytes, data_length) = parse_be_u16(bytes)?;
+        let (bytes, data) = bytes::take(data_length as usize)(bytes)?;
+
+        Ok((
+            bytes,
+            Answer {
+                labels,
+                record_type,
+                record_class,
+                ttl,
+                data: Vec::from(data),
+            },
+        ))
+    }
+
+    pub fn write_to(self: &Self, buffer: &mut BytesMut) {
+        self.labels.write_to(buffer);
+        self.record_type.write_to(buffer);
+        self.record_class.write_to(buffer);
+        buffer.put_u32(self.ttl);
+        buffer.put_u16(
+            u16::try_from(self.data.len())
+                .expect("Implementation should have ensured that data is not too long"),
+        );
+        buffer.put(&self.data[..]);
+    }
+}
+
+#[test]
+fn test_answer_creation() {
+    let answer = Answer::with_ipv4(
+        Labels::from_str("www.google.com").expect("Creating label should have succeeded"),
+        RecordType::A,
+        RecordClass::IN,
+        99,
+        0xAABBCCDD,
+    );
+    assert_eq!(answer.labels.len(), 3);
+    assert_eq!(answer.labels[0], "www");
+    assert_eq!(answer.labels[1], "google");
+    assert_eq!(answer.labels[2], "com");
+    assert_eq!(answer.record_type, RecordType::A);
+    assert_eq!(answer.record_class, RecordClass::IN);
+    assert_eq!(answer.ttl, 99);
+    assert_eq!(answer.data, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+}
+
+#[test]
+fn test_serialize_deserialize_answer_gets_the_same_result() {
+    let answer = Answer::with_ipv4(
+        Labels::from_str("www.google.com").expect("Creating label should have succeeded"),
+        RecordType::A,
+        RecordClass::IN,
+        99,
+        0xAABBCCDD,
+    );
+    let mut buf = BytesMut::new();
+    answer.write_to(&mut buf);
+    let (leftover, parsed_answer) = Answer::parse(&buf).expect("Decoding should go fine");
+    assert!(leftover.is_empty());
+    assert_eq!(answer, parsed_answer);
 }
 
 fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IResult<&'a [u8], ()> {
@@ -341,7 +505,7 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
     eprintln!("Received header: {:?}", header);
     eprintln!("Remaining bytes: {:X?}", payload);
 
-    let mut queries = Vec::<Query<'_>>::new();
+    let mut queries = Vec::<Query>::new();
 
     let mut payload = payload;
     for _ in 0..header.question_count {
@@ -354,15 +518,26 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
 
     response_buffer.clear();
     let mut reply_header = Header::reply(&header, ResponseCode::NoError);
-    reply_header.question_count = header.question_count;
+    reply_header.question_count = queries.len() as u16;
+    reply_header.answer_record_count = queries.len() as u16;
     eprintln!("Reply header: {:?}", reply_header);
     reply_header.write_to(response_buffer);
 
+    let mut answers = Vec::with_capacity(queries.len());
     for query in queries {
         eprintln!("Reply query: {:?}", query);
-        query
-            .write_to(response_buffer)
-            .expect("We've provided valid data in code, this should always succeed");
+        query.write_to(response_buffer);
+        answers.push(Answer::with_ipv4(
+            query.labels,
+            query.record_type,
+            query.record_class,
+            1,
+            0x01020304,
+        ));
+    }
+
+    for answer in answers {
+        answer.write_to(response_buffer);
     }
 
     eprintln!("Encoded bytes: {:X?}", response_buffer);

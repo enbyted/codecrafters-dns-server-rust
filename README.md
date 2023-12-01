@@ -1,5 +1,7 @@
 [![progress-banner](https://backend.codecrafters.io/progress/dns-server/f8380787-f5ac-486d-b220-219514bd82d8)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
+My first ever attempt at writing in Rust! It’s pretty neat so far if I can say so :)
+
 This is a starting point for Rust solutions to the
 ["Build Your Own DNS server" Challenge](https://app.codecrafters.io/courses/dns-server/overview).
 

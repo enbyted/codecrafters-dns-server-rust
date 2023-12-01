@@ -6,6 +6,11 @@ use nom::IResult;
 use std::net::UdpSocket;
 
 fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IResult<&'a [u8], ()> {
+    let base_offset = payload.as_ptr() as usize;
+    eprintln!(
+        "Received bytes: {:X?}, base_offset: {:?}",
+        payload, base_offset
+    );
     let (payload, header) = Header::parse(payload)?;
     eprintln!("Received header: {:?}", header);
     eprintln!("Remaining bytes: {:X?}", payload);
@@ -15,7 +20,6 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
         Opcode::Query => {
             let mut queries = Vec::<Query>::new();
 
-            let base_offset = payload.as_ptr() as usize;
             let mut payload = payload;
             for _ in 0..header.question_count {
                 let (rest, query) = Query::parse(payload)?;

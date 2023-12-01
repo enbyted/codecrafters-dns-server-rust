@@ -271,8 +271,8 @@ impl Query<'_> {
 
         // The last 0-length label
         buffer.put_u8(0);
-        buffer.put_u8(self.record_type as u8);
-        buffer.put_u8(self.record_class as u8);
+        buffer.put_u16(self.record_type as u16);
+        buffer.put_u16(self.record_class as u16);
 
         Ok(())
     }
@@ -294,9 +294,7 @@ impl Query<'_> {
     }
 
     fn parse_record_type(bytes: &[u8]) -> IResult<&[u8], RecordType> {
-        let (bytes, record_type_byte) = bytes::take(1usize)(bytes)?;
-        assert_eq!(record_type_byte.len(), 1);
-        let record_type_byte = record_type_byte[0];
+        let (bytes, record_type_byte) = parse_be_u16(bytes)?;
         let record_type = match record_type_byte {
             1 => Ok(RecordType::A),
             5 => Ok(RecordType::CNAME),
@@ -306,9 +304,7 @@ impl Query<'_> {
     }
 
     fn parse_record_class(bytes: &[u8]) -> IResult<&[u8], RecordClass> {
-        let (bytes, record_type_byte) = bytes::take(1usize)(bytes)?;
-        assert_eq!(record_type_byte.len(), 1);
-        let record_type_byte = record_type_byte[0];
+        let (bytes, record_type_byte) = parse_be_u16(bytes)?;
         let record_type = match record_type_byte {
             1 => Ok(RecordClass::IN),
             _ => Err(nom::Err::Error(Error::new(bytes, ErrorKind::Fail))),

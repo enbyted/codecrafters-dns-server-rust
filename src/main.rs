@@ -317,9 +317,33 @@ impl Query<'_> {
     }
 }
 
+#[test]
+fn test_query_creation() {
+    let query = Query::new("www.google.com", RecordType::A, RecordClass::IN);
+    assert_eq!(query.labels.len(), 3);
+    assert_eq!(query.labels[0], "www");
+    assert_eq!(query.labels[1], "google");
+    assert_eq!(query.labels[2], "com");
+    assert_eq!(query.record_type, RecordType::A);
+    assert_eq!(query.record_class, RecordClass::IN);
+}
+
+#[test]
+fn test_serialize_deserialize_query_gets_the_same_result() {
+    let query = Query::new("www.google.com", RecordType::A, RecordClass::IN);
+    let mut buf = BytesMut::new();
+    query
+        .write_to(&mut buf)
+        .expect("Should be OK with provided input");
+    let (leftover, parsed_query) = Query::parse(&buf).expect("Decoding should go fine");
+    assert!(leftover.is_empty());
+    assert_eq!(query, parsed_query);
+}
+
 fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IResult<&'a [u8], ()> {
     let (payload, header) = Header::parse(payload)?;
     eprintln!("Received header: {:?}", header);
+    eprintln!("Remaining bytes: {:X?}", payload);
 
     let mut queries = Vec::<Query<'_>>::new();
 
@@ -328,6 +352,7 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
         let (rest, query) = Query::parse(payload)?;
         payload = rest;
         eprintln!("Received query: {:?}", query);
+        eprintln!("Remaining bytes: {:X?}", payload);
         queries.push(query);
     }
 
@@ -338,11 +363,12 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
     reply_header.write_to(response_buffer);
 
     let reply_query = Query::new("google.com", RecordType::A, RecordClass::IN);
-    eprintln!("Reply qyery: {:?}", reply_query);
+    eprintln!("Reply query: {:?}", reply_query);
     reply_query
         .write_to(response_buffer)
         .expect("We've provided valid data in code, this should always succeed");
 
+    eprintln!("Encoded bytes: {:X?}", response_buffer);
     Ok((payload, ()))
 }
 

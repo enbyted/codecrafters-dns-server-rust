@@ -1,4 +1,8 @@
-use nom::{bytes::complete as bytes, IResult};
+use nom::{
+    bytes::complete as bytes,
+    error::{Error, ErrorKind, FromExternalError},
+    IResult,
+};
 
 pub fn parse_be_u16(bytes: &[u8]) -> IResult<&[u8], u16> {
     let (rest, bytes) = bytes::take(2usize)(bytes)?;

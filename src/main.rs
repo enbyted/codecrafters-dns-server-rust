@@ -15,6 +15,7 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
         Opcode::Query => {
             let mut queries = Vec::<Query>::new();
 
+            let base_offset = payload.as_ptr() as usize;
             let mut payload = payload;
             for _ in 0..header.question_count {
                 let (rest, query) = Query::parse(payload)?;
@@ -31,9 +32,24 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
             reply_header.write_to(response_buffer);
 
             let mut answers = Vec::with_capacity(queries.len());
+            for i in 1..queries.len() {
+                let (left, right) = queries.split_at_mut(i);
+                for a in left.iter_mut() {
+                    for b in right.iter_mut() {
+                        a.labels.decompress(&b.labels, base_offset);
+                        b.labels.decompress(&a.labels, base_offset);
+                    }
+                }
+            }
+            for query in queries.iter() {
+                eprintln!("Decompressed query: {:?}", query);
+            }
+
             for query in queries {
                 eprintln!("Reply query: {:?}", query);
-                query.write_to(response_buffer);
+                query
+                    .write_to(response_buffer)
+                    .expect("Writing query should have succeeded");
                 answers.push(Answer::with_ipv4(
                     query.labels,
                     query.record_type,

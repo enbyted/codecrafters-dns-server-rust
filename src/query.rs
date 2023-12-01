@@ -1,5 +1,5 @@
-use crate::helpers::parse_be_u16;
 use crate::labels::Labels;
+use crate::{helpers::parse_be_u16, labels::Label};
 use ::bytes::{BufMut, BytesMut};
 use nom::{
     error::{Error, ErrorKind},
@@ -83,10 +83,11 @@ impl Query {
         ))
     }
 
-    pub fn write_to(self: &Self, buffer: &mut BytesMut) {
-        self.labels.write_to(buffer);
+    pub fn write_to(self: &Self, buffer: &mut BytesMut) -> anyhow::Result<()> {
+        self.labels.write_to(buffer)?;
         self.record_type.write_to(buffer);
         self.record_class.write_to(buffer);
+        Ok(())
     }
 }
 
@@ -95,9 +96,18 @@ fn test_query_creation() {
     let query = Query::new("www.google.com", RecordType::A, RecordClass::IN)
         .expect("Creating should succeed");
     assert_eq!(query.labels.len(), 3);
-    assert_eq!(query.labels[0], "www");
-    assert_eq!(query.labels[1], "google");
-    assert_eq!(query.labels[2], "com");
+    assert_eq!(
+        query.labels[0],
+        Label::from_str("www").expect("this is a valid label, so it should succeed")
+    );
+    assert_eq!(
+        query.labels[1],
+        Label::from_str("google").expect("this is a valid label, so it should succeed")
+    );
+    assert_eq!(
+        query.labels[2],
+        Label::from_str("com").expect("this is a valid label, so it should succeed")
+    );
     assert_eq!(query.record_type, RecordType::A);
     assert_eq!(query.record_class, RecordClass::IN);
 }
@@ -107,7 +117,9 @@ fn test_serialize_deserialize_query_gets_the_same_result() {
     let query = Query::new("www.google.com", RecordType::A, RecordClass::IN)
         .expect("Creating should succeed");
     let mut buf = BytesMut::new();
-    query.write_to(&mut buf);
+    query
+        .write_to(&mut buf)
+        .expect("Writing should have succeeded");
     let (leftover, parsed_query) = Query::parse(&buf).expect("Decoding should go fine");
     assert!(leftover.is_empty());
     assert_eq!(query, parsed_query);

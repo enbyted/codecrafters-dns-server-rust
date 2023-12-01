@@ -1,5 +1,5 @@
 use crate::helpers::{parse_be_u16, parse_be_u32};
-use crate::labels::Labels;
+use crate::labels::{Label, Labels};
 use crate::query::{RecordClass, RecordType};
 use ::bytes::{BufMut, BytesMut};
 use nom::{bytes::complete as bytes, IResult};
@@ -75,9 +75,18 @@ fn test_answer_creation() {
         0xAABBCCDD,
     );
     assert_eq!(answer.labels.len(), 3);
-    assert_eq!(answer.labels[0], "www");
-    assert_eq!(answer.labels[1], "google");
-    assert_eq!(answer.labels[2], "com");
+    assert_eq!(
+        answer.labels[0],
+        Label::from_str("www").expect("This should be a valid label")
+    );
+    assert_eq!(
+        answer.labels[1],
+        Label::from_str("google").expect("This should be a valid label")
+    );
+    assert_eq!(
+        answer.labels[2],
+        Label::from_str("com").expect("This should be a valid label")
+    );
     assert_eq!(answer.record_type, RecordType::A);
     assert_eq!(answer.record_class, RecordClass::IN);
     assert_eq!(answer.ttl, 99);

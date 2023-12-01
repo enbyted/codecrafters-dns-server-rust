@@ -45,6 +45,7 @@ enum Opcode {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum ResponseCode {
     NoError = 0,
+    NotImplemented = 4,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -192,6 +193,7 @@ impl Header {
         let (bits, opcode_bytes) = bits::take(4usize)(bits)?;
         let opcode = match opcode_bytes {
             0 => Ok(ResponseCode::NoError),
+            4 => Ok(ResponseCode::NotImplemented),
             _ => Err(nom::Err::Failure(Error::new(bits, ErrorKind::Fail))),
         }?;
         Ok((bits, opcode))
@@ -504,40 +506,48 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
     let (payload, header) = Header::parse(payload)?;
     eprintln!("Received header: {:?}", header);
     eprintln!("Remaining bytes: {:X?}", payload);
-
-    let mut queries = Vec::<Query>::new();
-
-    let mut payload = payload;
-    for _ in 0..header.question_count {
-        let (rest, query) = Query::parse(payload)?;
-        payload = rest;
-        eprintln!("Received query: {:?}", query);
-        eprintln!("Remaining bytes: {:X?}", payload);
-        queries.push(query);
-    }
-
     response_buffer.clear();
-    let mut reply_header = Header::reply(&header, ResponseCode::NoError);
-    reply_header.question_count = queries.len() as u16;
-    reply_header.answer_record_count = queries.len() as u16;
-    eprintln!("Reply header: {:?}", reply_header);
-    reply_header.write_to(response_buffer);
 
-    let mut answers = Vec::with_capacity(queries.len());
-    for query in queries {
-        eprintln!("Reply query: {:?}", query);
-        query.write_to(response_buffer);
-        answers.push(Answer::with_ipv4(
-            query.labels,
-            query.record_type,
-            query.record_class,
-            1,
-            0x01020304,
-        ));
-    }
+    match (header.opcode) {
+        Opcode::Query => {
+            let mut queries = Vec::<Query>::new();
 
-    for answer in answers {
-        answer.write_to(response_buffer);
+            let mut payload = payload;
+            for _ in 0..header.question_count {
+                let (rest, query) = Query::parse(payload)?;
+                payload = rest;
+                eprintln!("Received query: {:?}", query);
+                eprintln!("Remaining bytes: {:X?}", payload);
+                queries.push(query);
+            }
+
+            let mut reply_header = Header::reply(&header, ResponseCode::NoError);
+            reply_header.question_count = queries.len() as u16;
+            reply_header.answer_record_count = queries.len() as u16;
+            eprintln!("Reply header: {:?}", reply_header);
+            reply_header.write_to(response_buffer);
+
+            let mut answers = Vec::with_capacity(queries.len());
+            for query in queries {
+                eprintln!("Reply query: {:?}", query);
+                query.write_to(response_buffer);
+                answers.push(Answer::with_ipv4(
+                    query.labels,
+                    query.record_type,
+                    query.record_class,
+                    1,
+                    0x01020304,
+                ));
+            }
+
+            for answer in answers {
+                answer.write_to(response_buffer);
+            }
+        }
+        _ => {
+            let reply_header = Header::reply(&header, ResponseCode::NotImplemented);
+            reply_header.write_to(response_buffer);
+        }
     }
 
     eprintln!("Encoded bytes: {:X?}", response_buffer);

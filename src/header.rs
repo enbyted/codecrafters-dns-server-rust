@@ -7,18 +7,68 @@ use nom::{
 };
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[repr(u16)]
 pub enum Opcode {
     Query = 0,
     IQuery = 1,
     Status = 2,
     Notify = 4,
     Update = 5,
+    Unknown(u16),
+}
+
+impl Into<u16> for Opcode {
+    fn into(self) -> u16 {
+        match self {
+            Self::Query => 0,
+            Self::IQuery => 1,
+            Self::Status => 2,
+            Self::Notify => 4,
+            Self::Update => 5,
+            Self::Unknown(code) => code,
+        }
+    }
+}
+
+impl From<u16> for Opcode {
+    fn from(value: u16) -> Self {
+        match value {
+            0 => Self::Query,
+            1 => Self::IQuery,
+            2 => Self::Status,
+            4 => Self::Notify,
+            5 => Self::Update,
+            other => Self::Unknown(other),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[repr(u16)]
 pub enum ResponseCode {
     NoError = 0,
     NotImplemented = 4,
+    Unknown(u16),
+}
+
+impl Into<u16> for ResponseCode {
+    fn into(self) -> u16 {
+        match self {
+            Self::NoError => 0,
+            Self::NotImplemented => 4,
+            Self::Unknown(code) => code,
+        }
+    }
+}
+
+impl From<u16> for ResponseCode {
+    fn from(value: u16) -> Self {
+        match value {
+            0 => Self::NoError,
+            4 => Self::NotImplemented,
+            other => Self::Unknown(other),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -88,7 +138,7 @@ impl Header {
             bits::bool,
             bits::bool,
             bits::bool,
-            bits::tag(0, 3usize),
+            bits::take::<_, u8, _, _>(3usize),
             Self::parse_response_code,
         )))(bytes)?;
 
@@ -122,7 +172,7 @@ impl Header {
             flags |= 0x8000;
         }
 
-        flags |= ((self.opcode as u16) & 0x0F) << 11;
+        flags |= ((Into::<u16>::into(self.opcode)) & 0x0F) << 11;
 
         if self.is_authoritative {
             flags |= 0x0400;
@@ -136,7 +186,7 @@ impl Header {
         if self.recursion_available {
             flags |= 0x0080;
         }
-        flags |= (self.response_code as u16) & 0x0F;
+        flags |= (Into::<u16>::into(self.response_code)) & 0x0F;
 
         buffer.put_u16(self.packet_id);
         buffer.put_u16(flags);
@@ -147,28 +197,14 @@ impl Header {
     }
 
     fn parse_opcode(bits: (&[u8], usize)) -> IResult<(&[u8], usize), Opcode> {
-        let (bits, opcode_bytes) = bits::take(4usize)(bits)?;
-        let opcode = match opcode_bytes {
-            0 => Ok(Opcode::Query),
-            1 => Ok(Opcode::IQuery),
-            2 => Ok(Opcode::Status),
-            4 => Ok(Opcode::Notify),
-            5 => Ok(Opcode::Update),
-            _ => Err(nom::Err::Failure(Error::new(
-                bits,
-                nom::error::ErrorKind::Fail,
-            ))),
-        }?;
+        let (bits, opcode_bytes): (_, u16) = bits::take(4usize)(bits)?;
+        let opcode = Opcode::from(opcode_bytes);
         Ok((bits, opcode))
     }
 
     fn parse_response_code(bits: (&[u8], usize)) -> IResult<(&[u8], usize), ResponseCode> {
-        let (bits, opcode_bytes) = bits::take(4usize)(bits)?;
-        let opcode = match opcode_bytes {
-            0 => Ok(ResponseCode::NoError),
-            4 => Ok(ResponseCode::NotImplemented),
-            _ => Err(nom::Err::Failure(Error::new(bits, ErrorKind::Fail))),
-        }?;
+        let (bits, response_code_bytes): (_, u16) = bits::take(4usize)(bits)?;
+        let opcode = ResponseCode::from(response_code_bytes);
         Ok((bits, opcode))
     }
 }

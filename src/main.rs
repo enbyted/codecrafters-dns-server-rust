@@ -354,15 +354,16 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
 
     response_buffer.clear();
     let mut reply_header = Header::reply(&header, ResponseCode::NoError);
-    reply_header.question_count = 1;
+    reply_header.question_count = header.question_count;
     eprintln!("Reply header: {:?}", reply_header);
     reply_header.write_to(response_buffer);
 
-    let reply_query = Query::new("google.com", RecordType::A, RecordClass::IN);
-    eprintln!("Reply query: {:?}", reply_query);
-    reply_query
-        .write_to(response_buffer)
-        .expect("We've provided valid data in code, this should always succeed");
+    for query in queries {
+        eprintln!("Reply query: {:?}", query);
+        query
+            .write_to(response_buffer)
+            .expect("We've provided valid data in code, this should always succeed");
+    }
 
     eprintln!("Encoded bytes: {:X?}", response_buffer);
     Ok((payload, ()))

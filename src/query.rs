@@ -1,5 +1,5 @@
+use crate::helpers::parse_be_u16;
 use crate::labels::Labels;
-use crate::{helpers::parse_be_u16, labels::Label};
 use ::bytes::{BufMut, BytesMut};
 use nom::{
     error::{Error, ErrorKind},
@@ -93,6 +93,8 @@ impl Query {
 
 #[test]
 fn test_query_creation() {
+    use crate::labels::Label;
+
     let query = Query::new("www.google.com", RecordType::A, RecordClass::IN)
         .expect("Creating should succeed");
     assert_eq!(query.labels.len(), 3);
@@ -123,4 +125,18 @@ fn test_serialize_deserialize_query_gets_the_same_result() {
     let (leftover, parsed_query) = Query::parse(&buf).expect("Decoding should go fine");
     assert!(leftover.is_empty());
     assert_eq!(query, parsed_query);
+}
+
+#[test]
+fn test_real_query_from_stage_7() {
+    let bytes: [u8; 41] = [
+        0x3, 0x61, 0x62, 0x63, 0x11, 0x6C, 0x6F, 0x6E, 0x67, 0x61, 0x73, 0x73, 0x64, 0x6F, 0x6D,
+        0x61, 0x69, 0x6E, 0x6E, 0x61, 0x6D, 0x65, 0x3, 0x63, 0x6F, 0x6D, 0x0, 0x0, 0x1, 0x0, 0x1,
+        0x3, 0x64, 0x65, 0x66, 0xC0, 0x10, 0x0, 0x1, 0x0, 0x1,
+    ];
+    let (rest, query1) = Query::parse(&bytes).expect("parsing should work");
+    eprintln!("Query1: {:?}", query1);
+    eprintln!("Rest: {:X?}", rest);
+    let (rest, query2) = Query::parse(&rest).expect("parsing should work");
+    eprintln!("Query2: {:?}", query2);
 }

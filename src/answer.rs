@@ -1,5 +1,5 @@
 use crate::helpers::{parse_be_u16, parse_be_u32};
-use crate::labels::{Label, Labels};
+use crate::labels::Labels;
 use crate::query::{RecordClass, RecordType};
 use ::bytes::{BufMut, BytesMut};
 use nom::{bytes::complete as bytes, IResult};
@@ -52,8 +52,8 @@ impl Answer {
         ))
     }
 
-    pub fn write_to(self: &Self, buffer: &mut BytesMut) {
-        self.labels.write_to(buffer);
+    pub fn write_to(self: &Self, buffer: &mut BytesMut) -> anyhow::Result<()> {
+        self.labels.write_to(buffer)?;
         self.record_type.write_to(buffer);
         self.record_class.write_to(buffer);
         buffer.put_u32(self.ttl);
@@ -62,11 +62,14 @@ impl Answer {
                 .expect("Implementation should have ensured that data is not too long"),
         );
         buffer.put(&self.data[..]);
+        Ok(())
     }
 }
 
 #[test]
 fn test_answer_creation() {
+    use crate::labels::Label;
+
     let answer = Answer::with_ipv4(
         Labels::from_str("www.google.com").expect("Creating label should have succeeded"),
         RecordType::A,

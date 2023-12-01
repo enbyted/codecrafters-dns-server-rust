@@ -122,7 +122,16 @@ impl Labels {
                 }
             }
 
+            let is_ptr = if let Label::Pointer { .. } = &label {
+                true
+            } else {
+                false
+            };
+
             labels.push(label);
+            if is_ptr {
+                break;
+            }
         }
 
         Ok((bytes, Labels { labels }))
@@ -144,50 +153,42 @@ impl Labels {
     }
 
     pub fn decompress(&mut self, other: &Labels, base_offset: usize) {
-        for label in self.labels.iter_mut() {
-            match label {
-                Label::Pointer { offset } => {
-                    let target_address = base_offset + *offset;
-                    let maybe_resolved = other
-                        .labels
-                        .iter()
-                        .filter_map(|l| match l {
-                            Label::Value { label, address } => {
-                                if *address == target_address {
-                                    Some(label)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        })
-                        .next();
-                    if let Some(value) = maybe_resolved {
-                        *label = Label::Value {
-                            label: value.clone(),
-                            address: target_address,
-                        };
+        let mut resolved = if let Some(Label::Pointer { offset }) = self.labels.last() {
+            let target_address = base_offset + *offset;
+            other
+                .labels
+                .iter()
+                .skip_while(|l| {
+                    if let Label::Value { address, .. } = l {
+                        *address != target_address
+                    } else {
+                        true
                     }
-                }
-                _ => {}
-            }
+                })
+                .map(Clone::clone)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        if !resolved.is_empty() {
+            self.labels.pop();
+            self.labels.append(&mut resolved);
         }
     }
 
     pub fn is_decompressed(&self) -> bool {
-        self.labels.iter().all(|l| {
-            if let Label::Value { .. } = l {
-                true
-            } else {
-                false
-            }
-        })
+        if let Some(Label::Value { .. }) = self.labels.last() {
+            true
+        } else {
+            false
+        }
     }
 }
 
 #[test]
 fn test_decompression() {
-    let bytes = b"\x04ABCD\x06123456\x00\x02qw\xC0\x00\xC0\x05\x00";
+    let bytes = b"\x04ABCD\x06123456\x00\x02qw\xC0\x00\xC0\x05";
     let (rest, labels1) = Labels::parse(bytes).expect("Parsing should succeed");
     eprintln!("Labels1: {:?}", labels1);
     eprintln!("Rest: {:X?}", rest);
@@ -196,10 +197,18 @@ fn test_decompression() {
     eprintln!("Labels2: {:?}", labels2);
     eprintln!("Rest: {:X?}", rest);
 
+    let (rest, mut labels3) = Labels::parse(rest).expect("Parsing should succeed");
+    eprintln!("Labels3: {:?}", labels3);
+    eprintln!("Rest: {:X?}", rest);
+
     assert!(labels1.is_decompressed());
     assert!(!labels2.is_decompressed());
+    assert!(!labels3.is_decompressed());
 
     labels2.decompress(&labels1, bytes.as_ptr() as usize);
     eprintln!("Labels2 after decompress: {:?}", labels2);
     assert!(labels2.is_decompressed());
+    labels3.decompress(&labels1, bytes.as_ptr() as usize);
+    eprintln!("Labels3 after decompress: {:?}", labels2);
+    assert!(labels3.is_decompressed());
 }

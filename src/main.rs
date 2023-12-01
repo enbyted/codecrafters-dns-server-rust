@@ -60,7 +60,9 @@ fn handle_message<'a>(payload: &'a [u8], response_buffer: &mut BytesMut) -> IRes
             }
 
             for answer in answers {
-                answer.write_to(response_buffer);
+                answer
+                    .write_to(response_buffer)
+                    .expect("Writing answer should have succeeded");
             }
         }
         _ => {
